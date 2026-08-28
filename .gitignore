@@ -1,0 +1,30 @@
+# Build artifacts
+wifiee-data/
+wpa_sycophant_src/
+
+# Generated certs and keys
+*.key
+*.crt
+*.dh
+*.pem
+
+# Logs
+*.log
+
+# Scan results
+scan_results.txt
+
+# Runtime
+hostapd-ctrl.run
+hostapd-ctrl.run.*
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
