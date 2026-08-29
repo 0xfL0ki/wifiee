@@ -189,7 +189,7 @@ If you run the script without cert flags and auto-probe fails, you'll be prompte
 ## Attack flow
 
 ```
-┌──────────────┐     deauth      ┌──────────────┐
+┌──────────────┐     deauth      ┌───────────────┐
 │   Real AP    │◄────────────────│   wlan1       │
 │  (CorpWiFi)  │                 │  (relay)      │
 └──────┬───────┘                 └──────┬────────┘
@@ -197,18 +197,18 @@ If you run the script without cert flags and auto-probe fails, you'll be prompte
        │  clients forced off            │  sycophant relays
        │                                │  EAP exchange
        ▼                                ▼
-┌──────────────┐   EAP relay    ┌───────────────┐
+┌──────────────┐   EAP relay    ┌────────────────┐
 │   Client     │───────────────►│   wlan0        │
 │  reconnects  │                │  (rogue AP)    │
 │  to rogue    │                │  hostapd-mana  │
 └──────────────┘                └───────┬────────┘
                                         │
                                         ▼
-                                 ┌──────────────┐
+                                 ┌───────────────┐
                                  │  Captured     │
                                  │  MSCHAPv2     │
                                  │  hashes       │
-                                 └──────────────┘
+                                 └───────────────┘
 ```
 
 ## VMware notes
