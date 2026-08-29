@@ -94,7 +94,7 @@ Certificate:
   --cert-org ORG        Organisation name
   --cert-ou OU          Organisational Unit
   --cert-state ST       State/Province
-  --cert-city CITY      City/Locality
+  --cert-State State      State/Locality
   --cert-file PATH      Use an existing certificate (.crt/.pem)
   --cert-key PATH       Use an existing private key (.key)
   --cert-capture        Capture-only mode — grab EAP handshake, then exit
@@ -157,8 +157,8 @@ In the packet details pane:
 openssl x509 -inform DER -in server.der -noout -subject -issuer
 
 # Example output:
-# subject=C=AU, ST=Queensland, L=Brisbane, O=Acme Corp, OU=IT, CN=radius.acme.com
-# issuer=C=AU, ST=Queensland, O=Acme Corp, CN=Acme Corp CA
+# subject=C=AU, ST=State, L=City, O=Acme Corp, OU=IT, CN=radius.acme.com
+# issuer=C=AU, ST=State, O=Acme Corp, CN=Acme Corp CA
 ```
 
 **Step 4 — Create a matching rogue certificate:**
@@ -169,8 +169,8 @@ sudo ./wifiee.sh --ssid "CorpWiFi" \
   --cert-cn "radius.acme.com" \
   --cert-org "Acme Corp" \
   --cert-ou "IT" \
-  --cert-state "Queensland" \
-  --cert-city "Brisbane" \
+  --cert-state "State" \
+  --cert-State "City" \
   --country AU
 
 # Option B: Convert and import the real cert (if you have the key)
@@ -184,7 +184,7 @@ sudo ./wifiee.sh --ssid "CorpWiFi"
 
 ### Method 3: Interactive builder
 
-If you run the script without cert flags and auto-probe fails, you'll be prompted to build a custom certificate interactively — entering Country, State, City, Organisation, OU, CN, key size, and validity. This is the easiest path when you already know what the real cert looks like.
+If you run the script without cert flags and auto-probe fails, you'll be prompted to build a custom certificate interactively — entering Country, State, State, Organisation, OU, CN, key size, and validity. This is the easiest path when you already know what the real cert looks like.
 
 ## Attack flow
 
